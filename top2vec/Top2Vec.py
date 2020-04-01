@@ -46,7 +46,22 @@ class Top2Vec:
     -------
     """
 
-    def __init__(self, documents, speed="fast-learn", workers=None):
+    def __init__(
+            self,
+            documents,
+            speed="fast-learn",
+            workers=None,
+            hs=None,
+            negative=None,
+            epochs=None,
+            umap_n_neighbors=15,
+            umap_n_components=5,
+            umap_metric='cosine',
+            hdbscan_min_cluster_size=15,
+            doc2vec_vector_size=300,
+            doc2vec_min_count=50,
+            doc2vec_window_size=15,
+            topic_top_words=50):
         """
         Parameters
         ----------
@@ -67,6 +82,36 @@ class Top2Vec:
         workers: int (optional)
             The amount of worker threads to be used in training the model. Larger
             amount will lead to faster training.
+        
+        hs: int (optional)
+            doc2vec hierarchical sampling flag
+
+        negative: int (optional)
+            doc2vec negative sampling rate
+    
+        epochs: int (optional)
+            doc2vec epochs
+        
+        umap_n_neighbors: int, default 15
+        
+        umap_n_components: int, default 5
+
+        umap_metric: str, default 'cosine'
+
+        hdbscan_min_cluster_size: int, default 15
+            size of minimal cluster that gets labeled in hdbscan
+
+        doc2vec_vector_size: int, default 300
+            size of embedding in doc2vec
+        
+        doc2vec_min_count: int, default 50
+            how many times a word needs to occur to be considered in doc2vec
+    
+        doc2vec_window_size: int, default 15
+            size of window for embedding words in doc2vec
+
+        topic_top_words: int, default 50
+            how many words to return per topic 
         """
         # validate inputs
         if speed == "fast-learn":
@@ -81,9 +126,11 @@ class Top2Vec:
             hs = 1
             negative = 0
             epochs = 400
-        else:
-            raise ValueError("speed parameter needs to be one of: fast-learn, learn or deep-learn")
-
+        elif speed is not None:
+            raise ValueError("speed parameter needs to be one of: None, fast-learn, learn or deep-learn")
+        elif speed is None and (negative is not None or hs is not None or epochs is not None):
+            raise ValueError("you need to set hs, negative and epochs if you did not specify speed parameter")
+        
         if workers is None:
             pass
         elif isinstance(workers, int):
@@ -98,21 +145,22 @@ class Top2Vec:
                         for i, doc in enumerate(documents)]
 
         # create documents and word embeddings with doc2vec
+        self.doc2vec_vector_size = doc2vec_vector_size
         if workers is None:
-            self.model = Doc2Vec(documents=train_corpus, vector_size=300, min_count=50, window=15,
+            self.model = Doc2Vec(documents=train_corpus, vector_size=doc2vec_vector_size, min_count=doc2vec_min_count, window=doc2vec_window_size,
                                  sample=1e-5, negative=negative, hs=hs, epochs=epochs, dm=0,
                                  dbow_words=1)
         else:
-            self.model = Doc2Vec(documents=train_corpus, vector_size=300, min_count=50, window=15,
+            self.model = Doc2Vec(documents=train_corpus, vector_size=doc2vec_vector_size, min_count=doc2vec_min_count, window=doc2vec_window_size,
                                  sample=1e-5, negative=negative, hs=hs, workers=workers, epochs=epochs, dm=0,
                                  dbow_words=1)
 
         # create 5D embeddings of documents
         docvecs = np.vstack([self.model.docvecs[i] for i in range(self.model.docvecs.count)])
-        umap_model = umap.UMAP(n_neighbors=15, n_components=5, metric='cosine').fit(docvecs)
+        umap_model = umap.UMAP(n_neighbors=umap_n_neighbors, n_components=umap_n_components, metric=umap_metric).fit(docvecs)
 
         # find dense areas of document vectors
-        cluster = hdbscan.HDBSCAN(min_cluster_size=15, metric='euclidean', cluster_selection_method='eom').fit(
+        cluster = hdbscan.HDBSCAN(min_cluster_size=hdbscan_min_cluster_size, metric='euclidean', cluster_selection_method='eom').fit(
             umap_model.embedding_)
 
         cluster_labels = pd.Series(cluster.labels_)
@@ -128,7 +176,7 @@ class Top2Vec:
         for label in unique_labels:
 
             # find centroid of dense document cluster
-            topic_vector = [0] * 300
+            topic_vector = [0] * doc2vec_vector_size 
             cluster_vec_indices = cluster_labels[cluster_labels == label].index.tolist()
             for vec_index in cluster_vec_indices:
                 topic_vector = topic_vector + self.model.docvecs[vec_index]
@@ -136,7 +184,7 @@ class Top2Vec:
             self.topic_vectors.append(topic_vector)
 
             # find closest word vectors to topic vector
-            sim_words = self.model.most_similar(positive=[topic_vector], topn=50)
+            sim_words = self.model.most_similar(positive=[topic_vector], topn=topic_top_words)
             self.topic_words.append([word[0] for word in sim_words])
             self.topic_word_scores.append([round(word[1], 4) for word in sim_words])
 
@@ -441,7 +489,7 @@ class Top2Vec:
         word_vecs = [self.model[word] for word in keywords]
         neg_word_vecs = [self.model[word] for word in keywords_neg]
 
-        combined_vector = [0] * 300
+        combined_vector = [0] * self.doc2vec_vector_size 
 
         for word_vec in word_vecs:
             combined_vector += word_vec
